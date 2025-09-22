@@ -1,8 +1,10 @@
 #include "cpuid.h"
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <time.h>
 #include <sys/time.h>
+#include <pthread.h>
 double current_sec()
 {
     struct timeval time;
@@ -152,7 +154,7 @@ static void avx512_fma_fp64_kernel(uint64_t loop){
             "zmm5","zmm6","zmm7","zmm8","zmm9" );
 }
 
-bench_result_t bench_fma(uint64_t loop,
+bench_result_t do_bench_fma(uint64_t loop,
     void(*kernel)(uint64_t),
     uint64_t flop_per_loop)
 {
@@ -167,12 +169,58 @@ bench_result_t bench_fma(uint64_t loop,
     return br;
 }
 
+struct thread_ctx {
+    pthread_t thread;
+    bench_result_t result;
+    uint64_t loop;
+    void (*kernel)(uint64_t);
+    uint64_t flop_per_loop;
+};
+
+void *thread_fn(void *arg)
+{
+    struct thread_ctx *ctx = arg;
+    ctx->result = do_bench_fma(ctx->loop, ctx->kernel, ctx->flop_per_loop);
+    pthread_exit(NULL);
+    return NULL;
+}
+
+bench_result_t bench_fma(uint64_t loop,
+    void (*kernel)(uint64_t),
+    uint64_t flop_per_loop, int ncpu)
+{
+    if (!ncpu)
+        return do_bench_fma(loop, kernel, flop_per_loop);
+
+    bench_result_t aggregate = { 0 };
+    struct thread_ctx *threads = calloc(ncpu, sizeof(*threads));
+
+    for (int i = 0; i < ncpu; ++i) {
+        threads[i] = (struct thread_ctx){ .loop = loop, .kernel = kernel, .flop_per_loop = flop_per_loop };
+        pthread_create(&threads[i].thread, NULL, thread_fn, &threads[i]);
+    }
+
+    for (int i = 0; i < ncpu; ++i) {
+        pthread_join(threads[i].thread, NULL);
+        aggregate.gflops += threads[i].result.gflops;
+    }
+
+    free(threads);
+    return aggregate;
+}
 
 #define LOOP 0xc0000000
-int main(){
+int main(int argc, char *argv[]){
+    int ncpu = 0;
     char cpu_vendor_str[13];
     cpuid_vendor_str(cpu_vendor_str);
     printf("%s\n", cpu_vendor_str);
+
+    if (argc == 2) {
+        ncpu = atoi(argv[1]);
+        if (ncpu < 0)
+            ncpu = 0;
+    }
 
     printf("CPU Feature: avx:%d avx2:%d", cpuid_support_avx(), cpuid_support_avx2());
     int avx512f = cpuid_support_avx512_f();
@@ -187,19 +235,19 @@ int main(){
 
     if(cpuid_support_avx2()){
         bench_result_t r_avx2_fma;
-        r_avx2_fma = bench_fma(LOOP, avx2_fma_fp32_kernel, AVX2_FMA_FP32_FLOP);
+        r_avx2_fma = bench_fma(LOOP, avx2_fma_fp32_kernel, AVX2_FMA_FP32_FLOP, ncpu);
         printf("avx256 fma fp32, %4.2f gflops\n", r_avx2_fma.gflops);
 
-        r_avx2_fma = bench_fma(LOOP, avx2_fma_fp64_kernel, AVX2_FMA_FP64_FLOP);
+        r_avx2_fma = bench_fma(LOOP, avx2_fma_fp64_kernel, AVX2_FMA_FP64_FLOP, ncpu);
         printf("avx256 fma fp64, %4.2f gflops\n", r_avx2_fma.gflops);
     }
 
     if(cpuid_support_avx512_f()){
         bench_result_t r_avx512_fma;
-        r_avx512_fma = bench_fma(LOOP, avx512_fma_fp32_kernel, AVX512_FMA_FP32_FLOP);
+        r_avx512_fma = bench_fma(LOOP, avx512_fma_fp32_kernel, AVX512_FMA_FP32_FLOP, ncpu);
         printf("avx512 fma fp32, %4.2f gflops\n", r_avx512_fma.gflops);
 
-        r_avx512_fma = bench_fma(LOOP, avx512_fma_fp64_kernel, AVX512_FMA_FP64_FLOP);
+        r_avx512_fma = bench_fma(LOOP, avx512_fma_fp64_kernel, AVX512_FMA_FP64_FLOP, ncpu);
         printf("avx512 fma fp64, %4.2f gflops\n", r_avx512_fma.gflops);
     }
 }

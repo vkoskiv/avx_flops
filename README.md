@@ -8,7 +8,7 @@ make
 
 # run
 ```
-./avx_flops
+./avx_flops [threads]
 ```
 
 # bench
