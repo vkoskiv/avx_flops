@@ -3,7 +3,12 @@ Benchmark cpu flops using avx instructions, same idea as https://github.com/pigi
 
 # build
 ```
-sh rebuild.sh
+make
+```
+
+# run
+```
+./avx_flops
 ```
 
 # bench
